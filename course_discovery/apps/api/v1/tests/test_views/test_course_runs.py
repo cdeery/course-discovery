@@ -12,6 +12,7 @@ from django.db.models.functions import Lower
 from freezegun import freeze_time
 from rest_framework.reverse import reverse
 from rest_framework.test import APIRequestFactory
+from waffle.testutils import override_switch
 
 from course_discovery.apps.api.v1.exceptions import EditableAndQUnsupported
 from course_discovery.apps.api.v1.tests.test_views.mixins import APITestCase, OAuth2Mixin, SerializationMixin
@@ -21,8 +22,9 @@ from course_discovery.apps.course_metadata.choices import CourseRunStatus, Progr
 from course_discovery.apps.course_metadata.models import CourseRun, CourseRunType, Seat, SeatType
 from course_discovery.apps.course_metadata.tests.factories import (
     CourseEditorFactory, CourseFactory, CourseRunFactory, CourseRunTypeFactory, CourseTypeFactory, OrganizationFactory,
-    PersonFactory, ProgramFactory, SeatFactory, SourceFactory, TrackFactory
+    PersonFactory, ProgramFactory, SeatFactory, SourceFactory, SubjectFactory, TrackFactory
 )
+from course_discovery.apps.course_metadata.utils import is_valid_slug_format
 from course_discovery.apps.ietf_language_tags.models import LanguageTag
 from course_discovery.apps.publisher.tests.factories import OrganizationExtensionFactory
 
@@ -32,11 +34,11 @@ class CourseRunViewSetTests(SerializationMixin, ElasticsearchTestMixin, OAuth2Mi
     def setUp(self):
         super().setUp()
         self.user = UserFactory(is_staff=True)
-        self.product_source = SourceFactory(name='test source')
+        self.product_source = SourceFactory(name='test source', slug='edx')
         self.client.force_authenticate(self.user)
         self.course_run = CourseRunFactory(course__partner=self.partner)
         self.course_run_2 = CourseRunFactory(course__key='Test+Course', course__partner=self.partner)
-        self.draft_course = CourseFactory(partner=self.partner, draft=True)
+        self.draft_course = CourseFactory(partner=self.partner, draft=True, product_source=self.product_source)
         self.draft_course_run = CourseRunFactory(course=self.draft_course, draft=True)
         self.draft_course_run.course.authoring_organizations.add(OrganizationFactory(key='course-id'))
         self.course_run_type = CourseRunTypeFactory(tracks=[TrackFactory()])
@@ -1279,3 +1281,56 @@ class CourseRunViewSetTests(SerializationMixin, ElasticsearchTestMixin, OAuth2Mi
         response = self.client.patch(url, patch_transaction['body'], format='json')
 
         assert response.status_code == patch_transaction['status_code']
+
+    @override_switch('is_new_slug_format_enabled', True)
+    def test_url_slug_generation_on_legal_review(self):
+        """
+        Tests url slug generation happens only after the course states is
+        changed to LegalReview.
+        """
+        self.mock_patch_to_studio(self.draft_course_run.key)
+        course = self.draft_course_run.course
+        course.subjects.add(SubjectFactory(name='Subject1'))
+
+        self.draft_course_run.status = CourseRunStatus.Unpublished
+        self.draft_course_run.save()
+        url = reverse('api:v1:course_run-detail', kwargs={'key': self.draft_course_run.key})
+        body = {
+            'course': self.draft_course_run.course.key,  # required, so we need for a put
+            'start': self.draft_course_run.start,  # required, so we need for a put
+            'end': self.draft_course_run.end,  # required, so we need for a put
+            'run_type': str(self.draft_course_run.type.uuid),  # required, so we need for a put
+            'draft': False,
+        }
+        response = self.client.put(url, body, format='json')
+        assert response.status_code == 200, f"Status {response.status_code}: {response.content}"
+        draft_course_run = CourseRun.everything.get(key=self.draft_course_run.key, draft=True)
+        assert draft_course_run.status == CourseRunStatus.LegalReview
+        assert is_valid_slug_format(draft_course_run.course.active_url_slug)
+
+    @override_switch('is_new_slug_format_enabled', False)
+    def test_url_slug_not_created_if_switch_disabled(self):
+        """
+        Tests url slug generation does not happen if the relevant feature
+        flag is disabled.
+        """
+        self.mock_patch_to_studio(self.draft_course_run.key)
+        course = self.draft_course_run.course
+        course.subjects.add(SubjectFactory(name='Subject1'))
+
+        self.draft_course_run.status = CourseRunStatus.Unpublished
+        self.draft_course_run.save()
+        url = reverse('api:v1:course_run-detail', kwargs={'key': self.draft_course_run.key})
+        body = {
+            'course': self.draft_course_run.course.key,  # required, so we need for a put
+            'start': self.draft_course_run.start,  # required, so we need for a put
+            'end': self.draft_course_run.end,  # required, so we need for a put
+            'run_type': str(self.draft_course_run.type.uuid),  # required, so we need for a put
+            'draft': False,
+        }
+        response = self.client.put(url, body, format='json')
+        assert response.status_code == 200, f"Status {response.status_code}: {response.content}"
+        draft_course_run = CourseRun.everything.get(key=self.draft_course_run.key, draft=True)
+        assert draft_course_run.status == CourseRunStatus.LegalReview
+        assert bool(draft_course_run.course.active_url_slug) is True
+        assert not is_valid_slug_format(draft_course_run.course.active_url_slug)

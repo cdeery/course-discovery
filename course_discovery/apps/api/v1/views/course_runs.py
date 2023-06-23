@@ -1,5 +1,6 @@
 import logging
 
+import waffle  # lint-amnesty, pylint: disable=invalid-django-waffle-import
 from django.db import models, transaction
 from django.db.models.functions import Lower
 from django.http.response import Http404
@@ -18,7 +19,9 @@ from course_discovery.apps.api.mixins import ValidElasticSearchQueryRequiredMixi
 from course_discovery.apps.api.pagination import ProxiedPagination
 from course_discovery.apps.api.permissions import IsCourseRunEditorOrDjangoOrReadOnly
 from course_discovery.apps.api.serializers import MetadataWithRelatedChoices
-from course_discovery.apps.api.utils import StudioAPI, get_query_param, reviewable_data_has_changed
+from course_discovery.apps.api.utils import (
+    StudioAPI, get_query_param, reviewable_data_has_changed, validate_or_create_course_slug
+)
 from course_discovery.apps.api.v1.exceptions import EditableAndQUnsupported
 from course_discovery.apps.core.utils import SearchQuerySetWrapper
 from course_discovery.apps.course_metadata.choices import CourseRunStatus
@@ -286,6 +289,8 @@ class CourseRunViewSet(ValidElasticSearchQueryRequiredMixin, viewsets.ModelViewS
         # back into legal review if a non exempt field was changed (expected_program_name and expected_program_type)
         if not draft and (course_run.status == CourseRunStatus.Unpublished or non_exempt_update):
             save_kwargs['status'] = CourseRunStatus.LegalReview
+            if waffle.switch_is_active('is_new_slug_format_enabled'):
+                validate_or_create_course_slug(course_run)
 
         course_run = serializer.save(**save_kwargs)
 

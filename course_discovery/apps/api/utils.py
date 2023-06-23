@@ -13,9 +13,24 @@ from sortedm2m.fields import SortedManyToManyField
 
 from course_discovery.apps.core.api_client.lms import LMSAPIClient
 from course_discovery.apps.core.utils import serialize_datetime
-from course_discovery.apps.course_metadata.models import CourseRun
+from course_discovery.apps.course_metadata.models import Course, CourseRun
+from course_discovery.apps.course_metadata.utils import get_slug_for_course, is_valid_slug_format
 
 logger = logging.getLogger(__name__)
+
+
+def validate_or_create_course_slug(course_run):
+    """
+    Validates or creates the active url slug for draft and non-draft course, relevant to the
+    provided course run
+    """
+    draft_course = Course.everything.get(key=course_run.course.key, draft=True)
+    is_slug_valid = is_valid_slug_format(draft_course.active_url_slug)
+    if not is_slug_valid and draft_course.product_source.slug == 'edx':
+        slug, _ = get_slug_for_course(draft_course)
+        draft_course.set_active_url_slug(slug)
+        if draft_course.official_version:
+            draft_course.official_version.set_active_url_slug(slug)
 
 
 def cast2int(value, name):
